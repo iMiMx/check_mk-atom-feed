@@ -4,70 +4,96 @@ import os
 import time
 import hashlib
 import json
+import sys
 
-CHECK_NAME = "Atom Feed"
-FEED_URL = "https://ATOM-FEED-TO-CHECK"
-STATE_FILE = "/tmp/atom_feed.json"
-TTL = 3600  # optional expiry for alerts (seconds)
+CONFIG_FILE = "/etc/check_mk/atom_feeds.json"
+STATE_DIR = "/var/lib/check_mk_agent/atom_feed_states"
+TTL = 3600  # Optional: auto-clear alerts after 1 hour
 
-feed = feedparser.parse(FEED_URL)
-if not feed.entries:
-    print("2 {CHECK_NAME} - Atom feed fetch failed or empty")
-    exit(0)
+os.makedirs(STATE_DIR, exist_ok=True)
 
-latest_entry = feed.entries[0]
-entry_id = latest_entry.get("id", "")
-entry_updated = latest_entry.get("updated", "")
-entry_title = latest_entry.get("title", "No title")
+def sanitize_name(name):
+    return "".join(c if c.isalnum() else "_" for c in name)
 
-entry_hash = hashlib.md5((entry_id + entry_updated).encode()).hexdigest()
-now = int(time.time())
+def load_feeds():
+    try:
+        with open(CONFIG_FILE) as f:
+            return json.load(f)
+    except Exception as e:
+        print(f"<<<local:sep(0)>>>\n2 AtomFeed_Global - Failed to read config: {e}")
+        sys.exit(1)
 
-# Load previous state
-if os.path.exists(STATE_FILE):
-    with open(STATE_FILE) as f:
-        state = json.load(f)
-else:
-    state = {}
+def load_state(feed_id):
+    path = os.path.join(STATE_DIR, f"{feed_id}.json")
+    if os.path.exists(path):
+        with open(path) as f:
+            return json.load(f)
+    return {}
 
-previous_hash = state.get("entry_hash")
-alert_state = state.get("alert_state", 0)
-alert_time = state.get("alert_time", 0)
+def save_state(feed_id, data):
+    path = os.path.join(STATE_DIR, f"{feed_id}.json")
+    with open(path, "w") as f:
+        json.dump(data, f)
 
-# Detect new or updated post
-if previous_hash != entry_hash:
-    # Decide alert level
-    if previous_hash and entry_id in previous_hash:
-        alert_state = 1  # Warning (updated post)
-        message = f"Atom feed post updated: {entry_title}"
+def check_feed(feed_name, feed_url):
+    feed_id = sanitize_name(feed_name)
+    state = load_state(feed_id)
+    now = int(time.time())
+
+    try:
+        feed = feedparser.parse(feed_url)
+        if not feed.entries:
+            return (3, feed_name, "Failed to parse or empty Atom feed")
+    except Exception as e:
+        return (3, feed_name, f"Error fetching feed: {e}")
+
+    latest = feed.entries[0]
+    entry_id = latest.get("id", "")
+    entry_updated = latest.get("updated", "")
+    entry_title = latest.get("title", "No title")
+    entry_hash = hashlib.md5((entry_id + entry_updated).encode()).hexdigest()
+
+    prev_hash = state.get("entry_hash")
+    alert_state = state.get("alert_state", 0)
+    alert_time = state.get("alert_time", 0)
+
+    if prev_hash != entry_hash:
+        # New or updated post
+        if prev_hash and entry_id in prev_hash:
+            alert_state = 1  # warning
+            message = f"Atom feed post updated: {entry_title}"
+        else:
+            alert_state = 2  # critical
+            message = f"New post in Atom feed: {entry_title}"
+
+        state = {
+            "entry_hash": entry_hash,
+            "alert_state": alert_state,
+            "alert_time": now,
+            "message": message
+        }
+        save_state(feed_id, state)
+
+    elif alert_state != 0 and (now - alert_time) > TTL:
+        alert_state = 0
+        message = "No changes in Atom feed (auto-clear)"
+        state = {
+            "entry_hash": entry_hash,
+            "alert_state": 0,
+            "alert_time": now,
+            "message": message
+        }
+        save_state(feed_id, state)
+
     else:
-        alert_state = 2  # Critical (new post)
-        message = f"New post in Atom feed: {entry_title}"
+        message = state.get("message", "No changes in Atom feed")
 
-    # Save new state
-    state = {
-        "entry_hash": entry_hash,
-        "alert_state": alert_state,
-        "alert_time": now,
-        "message": message
-    }
-    with open(STATE_FILE, "w") as f:
-        json.dump(state, f)
+    return (alert_state, feed_name, message)
 
-# Optionally clear after TTL
-elif alert_state != 0 and (now - alert_time) > TTL:
-    alert_state = 0
-    message = "No changes in Atom feed (auto-clear)"
-    state = {
-        "entry_hash": entry_hash,
-        "alert_state": 0,
-        "alert_time": now,
-        "message": message
-    }
-    with open(STATE_FILE, "w") as f:
-        json.dump(state, f)
-else:
-    # Persist current alert
-    message = state.get("message", "No changes in Atom feed")
+# === Output for CheckMK ===
+print("<<<local:sep(0)>>>")
 
-print(f"{alert_state} {CHECK_NAME} - {message}")
+feeds = load_feeds()
+for feed in feeds:
+    state, name, msg = check_feed(feed["name"], feed["url"])
+    print(f"{state} {name} - {msg}")
