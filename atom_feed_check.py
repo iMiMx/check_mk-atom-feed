@@ -5,13 +5,14 @@ import time
 import hashlib
 import json
 
-FEED_URL = "https://ATOM-FEED-URL"
-STATE_FILE = "/tmp/atom_feed_status.json"
+CHECK_NAME = "Atom Feed"
+FEED_URL = "https://ATOM-FEED-TO-CHECK"
+STATE_FILE = "/tmp/atom_feed.json"
 TTL = 3600  # optional expiry for alerts (seconds)
 
 feed = feedparser.parse(FEED_URL)
 if not feed.entries:
-    print("2 atom_feed - Atom feed fetch failed or empty")
+    print("2 {CHECK_NAME} - Atom feed fetch failed or empty")
     exit(0)
 
 latest_entry = feed.entries[0]
@@ -69,4 +70,4 @@ else:
     # Persist current alert
     message = state.get("message", "No changes in Atom feed")
 
-print(f"{alert_state} atom_feed - {message}")
+print(f"{alert_state} {CHECK_NAME} - {message}")
