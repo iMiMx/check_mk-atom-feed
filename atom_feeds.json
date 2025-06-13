@@ -1,0 +1,10 @@
+[
+  {
+    "name": "Feed_1",
+    "url": "https://ATOM.COM/URL-1.atom"
+  },
+  {
+    "name": "Feed_2",
+    "url": "https://ATOM.COM/URL-2.atom"
+  }
+]
